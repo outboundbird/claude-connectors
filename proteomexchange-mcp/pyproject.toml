@@ -1,0 +1,6 @@
+[project]
+name = "proteomexchange-mcp"
+version = "0.1.0"
+description = "MCP server for the ProteomeCentral PROXI API (ProteomeXchange datasets across all repositories)"
+requires-python = ">=3.10"
+dependencies = ["mcp[cli]>=2.2", "httpx>=0.27", "truststore>=0.9"]
