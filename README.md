@@ -103,7 +103,7 @@ Find IBD datasets in both PRIDE and ProteomeXchange and merge them by accession.
 
 | Tool | What it does |
 |---|---|
-| `find_datasets` | Runs one free-text search per term, merges and de-duplicates the results, **fetches every page**, writes a CSV, and returns a summary. Filters: `species`, `instrument`, `repository`, `keywords`, `year`, `sdrf`, `modification`, `contact`. Options: `max_per_term` (default 2000), `preview_rows` (default 10), `output_path` (absolute folder or `.csv` path). |
+| `find_datasets` | Runs one free-text search per term, merges and de-duplicates the results, **fetches every page**, writes a CSV, and returns a summary. Filters: `species`, `instrument`, `repository`, `keywords`, `year`, `sdrf`, `modification`, `contact`. Options: `max_per_term` (default 2000), `preview_rows` (default 10), `output_path` (absolute folder or `.csv` path), `include_tissue` (default true). |
 | `list_filter_values` | Valid filter values with dataset counts for species, instrument, repository, keywords, year, SDRF status and file-count bins, optionally scoped by a search term. |
 | `get_dataset` | Full record for a `PXD`/`MSV`/`JPST`/`IPX`/`PASS` accession: description, species, instruments, modifications, publications, contacts, links, SDRF status. |
 | `list_dataset_files` | File URLs grouped by type (raw, search-engine output, results…). Optional `file_type` substring filter. |
@@ -115,6 +115,10 @@ Find IBD datasets in both PRIDE and ProteomeXchange and merge them by accession.
   - a **full file path** ending in `.csv`: used as given
 - **Fallback:** if you don't give a location, the `PX_EXPORT_DIR` environment variable is used, if set. Otherwise no CSV is written: you get only the summary, and the agent is told to ask you where to save it.
 - **Encoding:** UTF-8 with a byte-order mark, so Excel shows accented names correctly.
+- **Tissue type:** ProteomeXchange has no tissue field.
+  - **PRIDE-hosted datasets:** the curated annotation of the sampled organism part is fetched from the PRIDE API.
+  - **All others, and PRIDE entries without an annotation:** the tissue is guessed by matching keywords, first in the title, keywords and sample protocol, then in the description if nothing matched. Guesses can be wrong, e.g. when an organ is only mentioned as background; check `tissueSource`.
+  - **Cost:** one extra request per dataset, about 20 s for 140 datasets. Pass `include_tissue=False` to skip it for very large searches.
 - **Columns:**
 
 | Column | Meaning |
@@ -123,6 +127,8 @@ Find IBD datasets in both PRIDE and ProteomeXchange and merge them by accession.
 | `title` | Dataset title |
 | `repository` | Hosting repository (PRIDE, MassIVE, iProX…) |
 | `species` | Species, comma-separated |
+| `tissueType` | Biological sample source, e.g. Blood serum, Feces, Colon, Biopsy, Cell line; several values are separated by `; ` |
+| `tissueSource` | How `tissueType` was obtained: `PRIDE curated` (PRIDE's annotation of the sampled organism part), `inferred (PRIDE text)` / `inferred (ProteomeXchange text)` (keyword match), `not found`, or `lookup failed` |
 | `instrument` | MS instrument(s) |
 | `announceDate` | Public release date |
 | `publications` | Citations or DOIs, HTML stripped |
