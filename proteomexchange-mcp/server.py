@@ -45,15 +45,104 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 # OS trust store so corporate TLS-inspection root CAs are honoured.
 _ssl_ctx = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 _client = httpx.AsyncClient(base_url=BASE, timeout=90, verify=_ssl_ctx, headers={"Accept": "application/json"})
+_pride = httpx.AsyncClient(
+    base_url="https://www.ebi.ac.uk/pride/ws/archive/v3", timeout=60, verify=_ssl_ctx,
+    headers={"Accept": "application/json"},
+)
 
 _COMPACT_FIELDS = [
     "accession", "title", "repository", "species", "sdrf", "files", "instrument",
     "publications", "labHead", "announceDate", "keywords",
 ]
 _CSV_FIELDS = [
-    "accession", "title", "repository", "species", "instrument", "announceDate", "publications",
-    "labHead", "keywords", "rawFiles", "totalFiles", "sdrf", "matchedTerms", "url",
+    "accession", "title", "repository", "species", "tissueType", "tissueSource", "instrument",
+    "announceDate", "publications", "labHead", "keywords", "rawFiles", "totalFiles", "sdrf",
+    "matchedTerms", "url",
 ]
+
+# Sample-source categories inferred from free text when no curated annotation exists.
+# Order is display order; each pattern is matched case-insensitively on word boundaries.
+_TISSUE_PATTERNS = [
+    # Labels follow PRIDE/BTO naming so curated and inferred values count together.
+    ("Blood plasma", r"plasma(?!\s+cells?)"),
+    ("Blood serum", r"sera|serum"),
+    ("Blood", r"whole blood|peripheral blood|blood samples?|PBMCs?|erythrocytes?|platelets?"),
+    ("Feces", r"stools?|feces|faeces|fecal|faecal"),
+    ("Colon", r"colon|colonic|colorectal mucosa|rectum|rectal|sigmoid"),
+    ("Small intestine", r"ileum|ileal|jejun\w*|duoden\w*|small intestine|terminal ileum"),
+    ("Intestine", r"intestin\w*|gut mucosa|gut tissue"),
+    ("Biopsy", r"biops\w*"),
+    ("Lymph node", r"lymph|lymph nodes?|mesenteric"),
+    ("Liver", r"liver|hepatocytes?|hepatic tissue"),
+    ("Urine", r"urine|urinary"),
+    ("Saliva", r"saliva|salivary"),
+    ("Cerebrospinal fluid", r"cerebrospinal fluid|CSF"),
+    ("Synovial fluid", r"synovial fluid"),
+    ("Skin", r"skin|epiderm\w*|dermis"),
+    ("Brain", r"brain|cortex|hippocamp\w*"),
+    ("Lung", r"lungs?|pulmonary|bronch\w*"),
+    ("Kidney", r"kidneys?|renal"),
+    ("Tumor tissue", r"tumou?rs?|carcinoma tissue"),
+    ("Organoid", r"organoids?|colonoids?|enteroids?"),
+    ("Cell line", r"cell lines?|Caco-?2|HT-?29|DLD-?1|HEK-?293\w*|HeLa|THP-?1|Jurkat"),
+    ("Primary cells", r"macrophages?|monocytes?|T cells?|B cells?|neutrophils?|epithelial cells?|fibroblasts?"),
+    ("Bacterial culture", r"bacterial (?:cultures?|isolates?|strains?)|E\. ?coli (?:isolates?|strains?)"),
+]
+_TISSUE_RES = [(label, re.compile(rf"\b(?:{pat})\b", re.I)) for label, pat in _TISSUE_PATTERNS]
+_TISSUE_CONCURRENCY = 8
+
+
+def _infer_tissue(specific: list[str | None], background: str | None) -> list[str]:
+    # Descriptions often name organs only as disease background, so use them only as a fallback.
+    for text in (" ".join(t for t in specific if t), background or ""):
+        found = [label for label, rx in _TISSUE_RES if rx.search(text)]
+        if found:
+            return found
+    return []
+
+
+async def _pride_tissue(accession: str) -> tuple[str, str] | None:
+    r = await _pride.get(f"/projects/{accession}")
+    if r.status_code != 200:
+        return None
+    p = r.json()
+    curated = [o.get("name") for o in p.get("organismParts") or [] if o.get("name")]
+    if curated:
+        return "; ".join(curated), "PRIDE curated"
+    inferred = _infer_tissue(
+        [p.get("title"), " ".join(p.get("keywords") or []), p.get("sampleProcessingProtocol")],
+        p.get("projectDescription"),
+    )
+    return ("; ".join(inferred), "inferred (PRIDE text)") if inferred else None
+
+
+async def _proxi_tissue(accession: str) -> tuple[str, str] | None:
+    d = await _get(f"/datasets/{accession}")
+    if d.get("notFound") or d.get("status") == "ERROR":
+        return None
+    inferred = _infer_tissue(
+        [d.get("title"), " ".join(k.get("value") or "" for k in d.get("keywords", []))], d.get("description")
+    )
+    return ("; ".join(inferred), "inferred (ProteomeXchange text)") if inferred else None
+
+
+async def _add_tissue(rows: list[dict]) -> None:
+    sem = asyncio.Semaphore(_TISSUE_CONCURRENCY)
+
+    async def one(row: dict) -> None:
+        async with sem:
+            try:
+                found = None
+                if row.get("repository") == "PRIDE":
+                    found = await _pride_tissue(row["accession"])
+                if not found:
+                    found = await _proxi_tissue(row["accession"])
+            except httpx.HTTPError:
+                row["tissueType"], row["tissueSource"] = "", "lookup failed"
+                return
+        row["tissueType"], row["tissueSource"] = found or ("", "not found")
+
+    await asyncio.gather(*(one(r) for r in rows))
 _DATASET_URL = "https://proteomecentral.proteomexchange.org/cgi/GetDataset?ID="
 _TAG = re.compile(r"<[^>]+>")
 
@@ -154,6 +243,7 @@ async def find_datasets(
     max_per_term: int = 2000,
     preview_rows: int = 10,
     output_path: str | None = None,
+    include_tissue: bool = True,
 ) -> dict:
     """Search ProteomeXchange datasets across all repositories, export the full list to CSV,
     and return a summary.
@@ -167,7 +257,12 @@ async def find_datasets(
 
     All pages are fetched (up to max_per_term per term). Every unique dataset is written to a CSV with
     columns accession, title, repository, species, instrument, announceDate, publications, labHead,
-    keywords, rawFiles, totalFiles, sdrf, matchedTerms, url.
+    keywords, rawFiles, totalFiles, sdrf, matchedTerms, url, plus tissueType / tissueSource.
+
+    tissueType is the biological sample source (e.g. blood plasma, stool, colon, biopsy, cell line).
+    For PRIDE-hosted datasets it is PRIDE's curated organism-part annotation; otherwise it is inferred
+    from the title/keywords (then description) and tissueSource says "inferred". Tissue lookup costs one
+    extra request per dataset; set include_tissue=False for very large result sets.
 
     output_path: where the user wants the CSV, as an absolute path to a folder (a timestamped file name
     is generated) or to a .csv file. Use the location the user gave; if they haven't said, ask them
@@ -191,10 +286,15 @@ async def find_datasets(
             if term:
                 entry["matchedTerms"].append(term)
     rows = sorted(merged.values(), key=lambda r: r.get("announceDate") or "", reverse=True)
+    if include_tissue:
+        await _add_tissue(rows)
     if csv_path:
         _write_csv(rows, csv_path)
 
     species_counts = Counter(s.strip() for r in rows for s in (r.get("species") or "unknown").split(","))
+    tissue_counts = Counter(
+        t.strip().capitalize() for r in rows for t in (r.get("tissueType") or "unknown").split(";") if t.strip()
+    )
     return {
         "csvPath": str(csv_path) if csv_path else None,
         **(
@@ -208,6 +308,14 @@ async def find_datasets(
         "byRepository": dict(Counter(r.get("repository") or "unknown" for r in rows).most_common()),
         "byYear": dict(sorted(Counter(_year(r) for r in rows).items(), reverse=True)),
         "topSpecies": dict(species_counts.most_common(8)),
+        **(
+            {
+                "topTissueTypes": dict(tissue_counts.most_common(10)),
+                "tissueSources": dict(Counter(r["tissueSource"] for r in rows).most_common()),
+            }
+            if include_tissue
+            else {}
+        ),
         "topInstruments": dict(Counter(r.get("instrument") or "unknown" for r in rows).most_common(5)),
         "newest": [
             {
@@ -215,6 +323,7 @@ async def find_datasets(
                 "date": r.get("announceDate"),
                 "repository": r.get("repository"),
                 "species": r.get("species"),
+                "tissue": r.get("tissueType"),
                 "title": _truncate(r.get("title"), 110),
             }
             for r in rows[: max(0, preview_rows)]
