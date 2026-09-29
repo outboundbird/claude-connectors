@@ -1,0 +1,6 @@
+[project]
+name = "geo-mcp"
+version = "0.1.0"
+description = "MCP server for NCBI GEO (Gene Expression Omnibus) via E-utilities"
+requires-python = ">=3.10"
+dependencies = ["mcp[cli]>=2.2", "httpx>=0.27", "truststore>=0.9"]
