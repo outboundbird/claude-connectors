@@ -1,18 +1,13 @@
 import asyncio
-import csv
 import logging
-import os
 import re
 import ssl
 from collections import Counter
-from datetime import datetime
-from pathlib import Path
 from typing import Any, Literal
 
 import httpx
 import truststore
 from mcp.server.mcpserver import MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
 
 BASE = "https://proteomecentral.proteomexchange.org/api/proxi/v0.1"
 MAX_PAGE = 500
@@ -25,9 +20,7 @@ all member repositories: PRIDE, MassIVE, jPOST, iProX, PeptideAtlas, PanoramaPub
 TOOL SELECTION GUIDE:
 - find_datasets: main search. Diseases have no structured field here, so pass disease names and synonyms
   as search_terms (e.g. ["ulcerative colitis", "Crohn", "inflammatory bowel disease"]); results are unioned.
-  Fetches every match, writes the full list to a CSV at the user's chosen output_path (ask the user for
-  the location if they haven't given one), and returns a summary plus the CSV path. Always give the user
-  the CSV path.
+  Returns aggregated summary statistics plus a `rows` list with all unique datasets.
   Structured filters (species, instrument, repository, keywords, year, sdrf) need exact facet values.
 - list_filter_values: valid species/instrument/repository/keyword/year/SDRF values with counts,
   optionally scoped by a search term. Species use names like "Homo sapiens", not "human".
@@ -195,35 +188,6 @@ async def _search_all(term: str | None, limit: int, **filters: Any) -> dict:
     return {"total": total, "rows": rows[:limit]}
 
 
-def _slug(terms: list[str | None]) -> str:
-    text = "_".join(t for t in terms if t) or "all"
-    return re.sub(r"[^A-Za-z0-9]+", "-", text).strip("-")[:60]
-
-
-def _resolve_csv_path(output_path: str | None, terms: list[str | None]) -> Path | None:
-    target = output_path or os.environ.get("PX_EXPORT_DIR")
-    if not target:
-        return None
-    path = Path(target).expanduser()
-    # The server's cwd is its own repo folder; relative paths would silently land there.
-    if not path.is_absolute():
-        raise ToolError(f"output_path must be an absolute path, got {target!r}. Ask the user for a full path.")
-    if path.suffix.lower() != ".csv":
-        path = path / f"px_{_slug(terms)}_{datetime.now():%Y%m%d-%H%M%S}.csv"
-    return path
-
-
-def _write_csv(rows: list[dict], path: Path) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # utf-8-sig so Excel detects UTF-8 (accented author names, en dashes in titles).
-    with path.open("w", newline="", encoding="utf-8-sig") as fh:
-        writer = csv.DictWriter(fh, fieldnames=_CSV_FIELDS, extrasaction="ignore")
-        writer.writeheader()
-        for r in rows:
-            raw, _, total = (r.get("files") or "").partition("/")
-            writer.writerow({**r, "rawFiles": raw, "totalFiles": total, "matchedTerms": "; ".join(r["matchedTerms"])})
-    return path
-
 
 def _year(r: dict) -> str:
     return (r.get("announceDate") or "")[:4] or "unknown"
@@ -242,11 +206,9 @@ async def find_datasets(
     contact: str | None = None,
     max_per_term: int = 2000,
     preview_rows: int = 10,
-    output_path: str | None = None,
     include_tissue: bool = True,
 ) -> dict:
-    """Search ProteomeXchange datasets across all repositories, export the full list to CSV,
-    and return a summary.
+    """Search ProteomeXchange datasets across all repositories and return a summary plus raw rows.
 
     search_terms: free-text terms (disease names, synonyms, tissues, genes...). Each term is searched
     separately and results are merged and de-duplicated, so list synonyms,
@@ -255,21 +217,15 @@ async def find_datasets(
     Other filters must match facet values from list_filter_values exactly
     (e.g. species="Homo sapiens", instrument="Q Exactive HF", keywords="DIA").
 
-    All pages are fetched (up to max_per_term per term). Every unique dataset is written to a CSV with
-    columns accession, title, repository, species, instrument, announceDate, publications, labHead,
-    keywords, rawFiles, totalFiles, sdrf, matchedTerms, url, plus tissueType / tissueSource.
+    All pages are fetched (up to max_per_term per term). Returns aggregated summary statistics
+    plus a `rows` list with all unique datasets (accession, title, repository, species, tissueType,
+    instrument, announceDate, publications, keywords, matchedTerms, url).
 
     tissueType is the biological sample source (e.g. blood plasma, stool, colon, biopsy, cell line).
-    For PRIDE-hosted datasets it is PRIDE's curated organism-part annotation; otherwise it is inferred
-    from the title/keywords (then description) and tissueSource says "inferred". Tissue lookup costs one
-    extra request per dataset; set include_tissue=False for very large result sets.
-
-    output_path: where the user wants the CSV, as an absolute path to a folder (a timestamped file name
-    is generated) or to a .csv file. Use the location the user gave; if they haven't said, ask them
-    before calling. Falls back to $PX_EXPORT_DIR; if neither is set, no CSV is written and only the
-    summary is returned. Tell the user the CSV path.
+    For PRIDE-hosted datasets it is PRIDE's curated organism-part annotation; otherwise inferred
+    from title/keywords. Tissue lookup costs one extra request per dataset; set include_tissue=False
+    for very large result sets.
     """
-    csv_path = _resolve_csv_path(output_path, search_terms or [None])
     filters = dict(
         species=species, instrument=instrument, repository=repository, keywords=keywords,
         year=year, sdrf=sdrf, modification=modification, contact=contact,
@@ -288,20 +244,12 @@ async def find_datasets(
     rows = sorted(merged.values(), key=lambda r: r.get("announceDate") or "", reverse=True)
     if include_tissue:
         await _add_tissue(rows)
-    if csv_path:
-        _write_csv(rows, csv_path)
 
     species_counts = Counter(s.strip() for r in rows for s in (r.get("species") or "unknown").split(","))
     tissue_counts = Counter(
         t.strip().capitalize() for r in rows for t in (r.get("tissueType") or "unknown").split(";") if t.strip()
     )
     return {
-        "csvPath": str(csv_path) if csv_path else None,
-        **(
-            {}
-            if csv_path
-            else {"csvNotSaved": "No output_path given. Ask the user where to save the CSV, then call again with output_path."}
-        ),
         "uniqueDatasets": len(rows),
         "matchesPerTerm": {t or "(all)": r["total"] for t, r in zip(terms, results)},
         "truncatedTerms": [t for t, r in zip(terms, results) if r["total"] > len(r["rows"])],
@@ -328,6 +276,7 @@ async def find_datasets(
             }
             for r in rows[: max(0, preview_rows)]
         ],
+        "rows": rows,
     }
 
 

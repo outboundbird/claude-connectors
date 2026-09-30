@@ -1,8 +1,5 @@
-import csv
 import logging
 import ssl
-from datetime import datetime
-from pathlib import Path
 from typing import Any, Literal
 
 import httpx
@@ -106,20 +103,6 @@ def _to_markdown_table(records: list[dict]) -> str:
     return "\n".join([header, sep] + rows)
 
 
-def _save_csv(records: list[dict], query: str) -> str:
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_query = "".join(c if c.isalnum() else "_" for c in query)[:40]
-    out_path = Path.home() / "Downloads" / f"geo_{safe_query}_{ts}.csv"
-    fields = ["accession", "uid", "entry_type", "title", "organism",
-              "n_samples", "platform_accession", "pubmed_ids", "update_date", "summary"]
-    with open(out_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
-        writer.writeheader()
-        for r in records:
-            row = {**r, "pubmed_ids": "; ".join(str(p) for p in (r.get("pubmed_ids") or []))}
-            writer.writerow(row)
-    return str(out_path)
-
 
 @mcp.tool()
 async def search_geo(
@@ -127,17 +110,16 @@ async def search_geo(
     organism: str | None = None,
     entry_type: Literal["GSE", "GPL", "GDS", "any"] = "GSE",
     max_results: int = 200,
-    format: Literal["table", "csv"] = "table",
 ) -> dict:
     """Search GEO datasets by keyword with optional organism filter.
 
     Args:
-        query: Free-text search (e.g. "SCALLOP", "IBD RNA-seq", "proteomics plasma").
+        query: Free-text search (e.g. "IBD RNA-seq", "heart failure microarray").
         organism: Species name for exact filtering (e.g. "Homo sapiens", "Mus musculus").
         entry_type: Dataset type — GSE (series, most common), GPL (platform), GDS (curated), any.
         max_results: Maximum results to return (default 200).
-        format: "table" returns a markdown summary table; "csv" also saves full raw results
-                to ~/Downloads/geo_<query>_<timestamp>.csv and returns the file path.
+
+    Returns both a markdown summary table and the full raw results list.
     """
     term = _build_query(query, organism)
     search = await _get(
@@ -157,18 +139,13 @@ async def search_geo(
 
     records = records[:max_results]
 
-    result: dict[str, Any] = {
+    return {
         "query": term,
         "total_in_geo": int(total_found),
         "returned": len(records),
         "table": _to_markdown_table(records),
+        "results": records,
     }
-
-    if format == "csv":
-        csv_path = _save_csv(records, query)
-        result["csv_path"] = csv_path
-
-    return result
 
 
 @mcp.tool()
