@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import ssl
 from typing import Any, Literal
@@ -70,6 +71,23 @@ def _truncate(text: str | None, n: int) -> str | None:
     return text[:n].rstrip() + "…"
 
 
+_SAMPLE_CONCURRENCY = 8
+
+
+async def _add_sample_counts(projects: list[dict]) -> None:
+    sem = asyncio.Semaphore(_SAMPLE_CONCURRENCY)
+
+    async def one(p: dict) -> None:
+        async with sem:
+            try:
+                data = await _get(f"/projects/{p['accession']}")
+                p["numberOfSamples"] = data.get("numberOfSamples")
+            except httpx.HTTPError:
+                p["numberOfSamples"] = None
+
+    await asyncio.gather(*(one(p) for p in projects))
+
+
 def _compact_project(p: dict) -> dict:
     return {
         "accession": p.get("accession"),
@@ -84,7 +102,6 @@ def _compact_project(p: dict) -> dict:
         "submissionType": p.get("submissionType"),
         "publicationDate": p.get("publicationDate"),
         "downloadCount": p.get("downloadCount"),
-        "numberOfSamples": p.get("numberOfSamples"),
     }
 
 
@@ -115,6 +132,7 @@ async def find_datasets(
     sort_direction: Literal["DESC", "ASC"] = "DESC",
     page: int = 0,
     page_size: int = 25,
+    include_sample_count: bool = True,
 ) -> dict:
     """Search PRIDE datasets by free-text keyword and structured criteria.
 
@@ -122,6 +140,8 @@ async def find_datasets(
     (e.g. organism="Homo sapiens (human)", disease="Breast cancer", tissue="Liver",
     experiment_type="Shotgun proteomics", quantification_method="TMT", instrument="Q Exactive").
     year_from/year_to filter on publication year within the returned page.
+    include_sample_count: fetch numberOfSamples for each result via an extra API call per dataset
+    (default True; set False for faster results when sample count is not needed).
     """
     flt = _build_filter(
         organisms=organism,
@@ -149,6 +169,8 @@ async def find_datasets(
             year = int((p.get("publicationDate") or "0")[:4] or 0)
             return (not year_from or year >= year_from) and (not year_to or year <= year_to)
         projects = [p for p in projects if in_range(p)]
+    if include_sample_count:
+        await _add_sample_counts(projects)
     total = r.headers.get("total_records")
     return {
         "filter": flt,
