@@ -65,9 +65,9 @@ After every search, display in chat:
 | Accession | Title | Organism | N Samples | Platform | PMIDs |
 |-----------|-------|----------|-----------|----------|-------|
 
-**PRIDE** (`numberOfSamples` field available):
-| Accession | Title | Organisms | Diseases | Tissue | N Samples | Instruments |
-|-----------|-------|-----------|----------|--------|-----------|-------------|
+**PRIDE** (no sample count in API — use available fields):
+| Accession | Title | Organisms | Diseases | Tissue | Instruments |
+|-----------|-------|-----------|----------|--------|-------------|
 
 **ProteomeXchange** (`numberOfSamples` available for PRIDE-hosted rows; blank for others):
 | Accession | Title | Species | Tissue | N Samples | Instrument | Repository |
