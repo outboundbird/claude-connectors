@@ -84,6 +84,7 @@ def _compact_project(p: dict) -> dict:
         "submissionType": p.get("submissionType"),
         "publicationDate": p.get("publicationDate"),
         "downloadCount": p.get("downloadCount"),
+        "numberOfSamples": p.get("numberOfSamples"),
     }
 
 

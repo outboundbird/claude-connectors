@@ -94,19 +94,22 @@ def _infer_tissue(specific: list[str | None], background: str | None) -> list[st
     return []
 
 
-async def _pride_tissue(accession: str) -> tuple[str, str] | None:
+async def _pride_tissue(accession: str) -> tuple[tuple[str, str] | None, int | None]:
+    """Returns (tissue_tuple, numberOfSamples). tissue_tuple is None if not found."""
     r = await _pride.get(f"/projects/{accession}")
     if r.status_code != 200:
-        return None
+        return None, None
     p = r.json()
+    n_samples = p.get("numberOfSamples")
     curated = [o.get("name") for o in p.get("organismParts") or [] if o.get("name")]
     if curated:
-        return "; ".join(curated), "PRIDE curated"
+        return ("; ".join(curated), "PRIDE curated"), n_samples
     inferred = _infer_tissue(
         [p.get("title"), " ".join(p.get("keywords") or []), p.get("sampleProcessingProtocol")],
         p.get("projectDescription"),
     )
-    return ("; ".join(inferred), "inferred (PRIDE text)") if inferred else None
+    tissue = ("; ".join(inferred), "inferred (PRIDE text)") if inferred else None
+    return tissue, n_samples
 
 
 async def _proxi_tissue(accession: str) -> tuple[str, str] | None:
@@ -125,13 +128,19 @@ async def _add_tissue(rows: list[dict]) -> None:
     async def one(row: dict) -> None:
         async with sem:
             try:
-                found = None
                 if row.get("repository") == "PRIDE":
-                    found = await _pride_tissue(row["accession"])
-                if not found:
+                    tissue, n_samples = await _pride_tissue(row["accession"])
+                    row["numberOfSamples"] = n_samples
+                    if tissue:
+                        row["tissueType"], row["tissueSource"] = tissue
+                        return
+                    found = await _proxi_tissue(row["accession"])
+                else:
+                    row["numberOfSamples"] = None
                     found = await _proxi_tissue(row["accession"])
             except httpx.HTTPError:
                 row["tissueType"], row["tissueSource"] = "", "lookup failed"
+                row.setdefault("numberOfSamples", None)
                 return
         row["tissueType"], row["tissueSource"] = found or ("", "not found")
 

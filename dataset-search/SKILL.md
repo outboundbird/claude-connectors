@@ -59,10 +59,19 @@ After every search, display in chat:
 - Date range of the datasets (oldest → newest)
 - How many have linked PMIDs
 
-**b) Summarized markdown table** with key columns:
+**b) Summarized markdown table** — use database-specific columns (only show columns with actual data):
 
-| Accession | Title | Organism | N Samples | Platform / Instrument | PMIDs |
-|-----------|----|------|------|------|------|
+**GEO** (`n_samples` field available):
+| Accession | Title | Organism | N Samples | Platform | PMIDs |
+|-----------|-------|----------|-----------|----------|-------|
+
+**PRIDE** (`numberOfSamples` field available):
+| Accession | Title | Organisms | Diseases | Tissue | N Samples | Instruments |
+|-----------|-------|-----------|----------|--------|-----------|-------------|
+
+**ProteomeXchange** (`numberOfSamples` available for PRIDE-hosted rows; blank for others):
+| Accession | Title | Species | Tissue | N Samples | Instrument | Repository |
+|-----------|-------|---------|--------|-----------|------------|------------|
 
 Truncate long titles to ~80 characters. List up to `returned` rows.
 
