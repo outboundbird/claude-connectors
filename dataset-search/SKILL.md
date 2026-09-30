@@ -69,9 +69,9 @@ After every search, display in chat:
 | Accession | Title | Organisms | Diseases | Tissue | Instruments |
 |-----------|-------|-----------|----------|--------|-------------|
 
-**ProteomeXchange** (`numberOfSamples` available for PRIDE-hosted rows; blank for others):
-| Accession | Title | Species | Tissue | N Samples | Instrument | Repository |
-|-----------|-------|---------|--------|-----------|------------|------------|
+**ProteomeXchange** (no sample count available across repositories):
+| Accession | Title | Species | Tissue | Instrument | Repository | Date |
+|-----------|-------|---------|--------|------------|------------|------|
 
 Truncate long titles to ~80 characters. List up to `returned` rows.
 
